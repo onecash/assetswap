@@ -77,6 +77,11 @@ contract Swap is Operator {
         maxExpirePeroid = _maxExpirePeroid;
     }
 
+    // ==================  VIEW   ========================
+    function getOrdersCount() public view returns(uint256) {
+        return orders.length;
+    }
+
     // ============== ORDER OPERATION ====================
     function createOrder(
         address assetToken,
