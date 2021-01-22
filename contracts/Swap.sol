@@ -1,4 +1,5 @@
 pragma solidity ^0.6.0;
+pragma experimental ABIEncoderV2;
 
 import '@openzeppelin/contracts/math/SafeMath.sol';
 import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
@@ -10,30 +11,20 @@ contract Swap is Operator {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
+    address public assetToken;
+    address public askToken;
     address public feeFund;
     address public createFeeToken;
     uint256 public createFee;
     uint256 public dealFeeRate;
-    
-    mapping (address => bool) public supportedAssetTokens;
-    mapping (address => bool) public supportedAskTokens;
     uint256 public maxExpirePeroid;
-
-    enum OrderStatus {
-        ACTIVE,
-        DONE,
-        DELETE
-    }
 
     struct Order {
         uint256 createTime;
         address owner;
-        address assetToken;
-        address askToken;
         uint256 assetAmount;
         uint256 askAmount;
         uint256 expire;
-        OrderStatus status;
     }
 
     Order[] public orders;
@@ -43,9 +34,9 @@ contract Swap is Operator {
     event CreateOrder( 
         uint256 orderId, 
         uint256 timestamp,
-        address onwer, 
-        address assetToken, 
-        uint256 assetAmount
+        address onwer,  
+        uint256 assetAmount,
+        uint256 askAmount
     );
     event CancelOrder(
         uint256 orderId,
@@ -54,22 +45,21 @@ contract Swap is Operator {
     event DealOrder(
         uint256 orderId,
         uint256 timestamp,
-        address deal,
-        address bidToken,
+        address dealer,
         uint256 bidAmount
-    );
-    event DoneOrder(
-        uint256 orderId,
-        uint256 timestamp
     );
 
     constructor(
+        address _assetToken,
+        address _askToken,
         address _feeFund,
         address _createFeeToken,
         uint256 _createFee,
         uint256 _dealFeeRate,
         uint256 _maxExpirePeroid
     ) public {
+        assetToken = _assetToken;
+        askToken = _askToken;
         feeFund = _feeFund;
         createFeeToken = _createFeeToken;
         createFee = _createFee;
@@ -84,14 +74,14 @@ contract Swap is Operator {
 
     // ============== ORDER OPERATION ====================
     function createOrder(
-        address assetToken,
-        address askToken,
         uint256 assetAmount,
         uint256 askAmount,
         uint256 expire
     ) public {
         uint256 expirePeriod = expire.sub(block.timestamp);
         require(expirePeriod <= maxExpirePeroid, "SWAP: expire invalid");
+        require(assetAmount > 0, "SWAP: asset amount invalid");
+        require(askAmount > 0, "SWAP: ask amount invalid");
 
         IERC20(assetToken).safeTransferFrom(msg.sender, address(this), assetAmount);
         if (createFee > 0) {
@@ -101,19 +91,16 @@ contract Swap is Operator {
         Order memory order;
         order.owner = msg.sender;
         order.createTime = block.timestamp;
-        order.assetToken = assetToken;
         order.assetAmount = assetAmount;
-        order.askToken = askToken;
         order.askAmount = askAmount;
         order.expire = expire;
-        order.status = OrderStatus.ACTIVE;
 
         uint256 orderId = orders.length;
         orders.push(order);
         userOrders[msg.sender].push(orderId);
         userOrdersCount[msg.sender] = userOrdersCount[msg.sender].add(1);
 
-        emit CreateOrder(orderId, block.timestamp, msg.sender, assetToken, assetAmount);
+        emit CreateOrder(orderId, block.timestamp, msg.sender, assetAmount, askAmount);
     }
 
     function cancelOrder(
@@ -121,56 +108,43 @@ contract Swap is Operator {
     ) public {
         Order storage order = orders[orderId];
         require(order.owner == msg.sender, "SWAP: no owner");
-        require(
-            order.status == OrderStatus.ACTIVE,
-            "SWAP: invalid order status"
-        );
-        IERC20(order.assetToken).safeTransfer(msg.sender, order.assetAmount);
-        order.status = OrderStatus.DELETE;
+        require(order.assetAmount > 0, "SWAP: done yet");
+
+        IERC20(assetToken).safeTransfer(msg.sender, order.assetAmount);
+        order.assetAmount = 0;
+        order.askAmount = 0;
 
         emit CancelOrder(orderId, block.timestamp);
     }
 
     function dealOrder(
-        uint256 orderId
+        uint256 orderId,
+        uint256 bidAmount
     ) public {
         Order storage order = orders[orderId];
-        require(order.status == OrderStatus.ACTIVE, "SWAP: invalid order");
         require(block.timestamp >= order.expire, "SWAP: order expire");
+        require(order.assetAmount > 0, "SWAP: done yet");
 
-        IERC20(order.askToken).safeTransferFrom(msg.sender, address(this), order.askAmount);
-        IERC20(order.assetToken).safeTransfer(msg.sender, order.assetAmount);
-        order.status = OrderStatus.DONE;
+        uint256 dealAskAmount = bidAmount;
+        if (dealAskAmount > order.askAmount) {
+            dealAskAmount = order.askAmount;
+        }
+        uint256 dealAssetAmount = order.assetAmount.mul(dealAskAmount).div(order.askAmount);
+        uint256 feeAmount = dealAskAmount.mul(dealFeeRate).div(10000);
 
-        emit DealOrder(orderId, block.timestamp, msg.sender, order.askToken, order.askAmount);
-    }
-
-    function doneOrder(
-        uint256 orderId
-    ) public {
-        Order storage order = orders[orderId];
-        require(order.owner == msg.sender, "SWAP: no owner");
-        require(
-            order.status == OrderStatus.DONE,
-            "SWAP: invalid order status"
-        );
+        IERC20(askToken).safeTransferFrom(msg.sender, feeFund, feeAmount);   
+        IERC20(askToken).safeTransferFrom(msg.sender, order.owner, dealAskAmount.sub(feeAmount));
+        IERC20(assetToken).safeTransfer(msg.sender, dealAssetAmount);
         
-        uint256 feeAmount = order.askAmount.mul(dealFeeRate).div(10000);
-        uint256 amount = order.askAmount.sub(feeAmount);
-        IERC20(order.askToken).safeTransfer(feeFund, feeAmount);
-        IERC20(order.askToken).safeTransfer(msg.sender, amount);
-        order.status = OrderStatus.DELETE;
-
-        emit DoneOrder(orderId, block.timestamp);
+        order.assetAmount = order.assetAmount.sub(dealAssetAmount);
+        order.askAmount = order.askAmount.sub(dealAskAmount);
+        
+        emit DealOrder(orderId, block.timestamp, msg.sender, dealAskAmount);
     }
 
     // ============== GOV =============== 
     function setFeeFund(address _feeFund) public onlyOperator {
         feeFund = _feeFund;
-    }
-
-    function setCreateFeeToken(address _createFeeToken) public onlyOperator {
-        createFeeToken = _createFeeToken;
     }
 
     function setCreateFee(uint256 _createFee) public onlyOperator {
@@ -183,14 +157,6 @@ contract Swap is Operator {
 
     function setMaxExpirePeroid(uint256 _maxExpirePeroid) public onlyOperator {
         maxExpirePeroid = _maxExpirePeroid;
-    }
-
-    function setSupportedAssetTokens(address token, bool set) public onlyOperator {
-        supportedAssetTokens[token] = set;
-    }
-
-    function setSupportedAskTokens(address token, bool set) public onlyOperator {
-        supportedAskTokens[token] = set;
     }
 
 }
