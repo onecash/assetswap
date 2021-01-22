@@ -29,7 +29,6 @@ contract Swap is Operator {
 
     Order[] public orders;
     mapping (address => uint256[]) public userOrders;
-    mapping (address => uint256) public userOrdersCount;
 
     event CreateOrder( 
         uint256 orderId, 
@@ -72,6 +71,10 @@ contract Swap is Operator {
         return orders.length;
     }
 
+    function getUserOrdersCount(address owner) public view returns(uint256) {
+        return userOrders[owner].length;
+    }
+
     // ============== ORDER OPERATION ====================
     function createOrder(
         uint256 assetAmount,
@@ -98,7 +101,6 @@ contract Swap is Operator {
         uint256 orderId = orders.length;
         orders.push(order);
         userOrders[msg.sender].push(orderId);
-        userOrdersCount[msg.sender] = userOrdersCount[msg.sender].add(1);
 
         emit CreateOrder(orderId, block.timestamp, msg.sender, assetAmount, askAmount);
     }
