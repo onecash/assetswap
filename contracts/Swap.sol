@@ -71,8 +71,41 @@ contract Swap is Operator {
         return orders.length;
     }
 
+    function getBatchOrders(uint256 fromId) public view returns(Order[] memory) {
+        Order[] memory ret = new Order[](100);
+        uint256 idx = 0;
+        for (uint256 i = fromId; i >= 0; i--) {
+            Order storage order = orders[i];
+            if (order.expire >= block.timestamp && order.askAmount > 0) {
+                ret[idx] = order;
+                idx = idx.add(1); 
+            }
+            if (order.expire < block.timestamp) {
+                break;
+            }
+            if (idx >= 100) {
+                break;
+            }
+        }
+        return ret;
+    }
+
     function getUserOrdersCount(address owner) public view returns(uint256) {
         return userOrders[owner].length;
+    }
+
+    function getBatchUserOrders(address owner, uint256 fromId) public view returns(Order[] memory) {
+        Order[] memory ret = new Order[](100);
+        uint256 idx = 0;
+        for (uint256 i = fromId; i >= 0; i--) {
+            uint256 orderId = userOrders[owner][i];
+            ret[idx] = orders[orderId];
+            idx = idx.add(1);
+            if (idx >= 100) {
+                break;
+            }
+        }
+        return ret;
     }
 
     // ============== ORDER OPERATION ====================
